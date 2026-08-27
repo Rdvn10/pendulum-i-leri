@@ -1,90 +1,85 @@
 // ==========================================
 // ROTARY INVERTED PENDULUM 
-// (3 DURUMLU FSM + KASKAD KONTROL + 2X ÇÖZÜNÜRLÜK)
 // ==========================================
 #include <math.h>
 
-// --- PİN TANIMLAMALARI ---
-const int sarkac_A = 2; 
-const int sarkac_B = 4; 
-const int motor_A = 3; 
-const int motor_B = 5; 
+// --- TANIMLAMALAR ---
+ const int sarkac_A = 2; 
+ const int sarkac_B = 4; 
+ const int motor_A = 3; 
+ const int motor_B = 5; 
 
-const int RPWM = 10;
-const int LPWM = 9;
+ const int RPWM = 10;
+ const int LPWM = 9;
 
-// Sarkaç bilgi
-const double m = 0.01;
-const double l = 0.12;
-const double eylemsizlik_moment = m*l*l/3.0;
-const double g = 9.81;
+ const double m = 0.01;
+ const double l = 0.12;
+ const double eylemsizlik_moment = m*l*l/3.0;
+ const double g = 9.81;
 
-// Enerji değerleri
-const double hedef_enerji = 2*m*g*l;
-double mevcut_enerji = 0;
+ const double hedef_enerji = 2*m*g*l;
+ double mevcut_enerji = 0;
 
-// --- DURUM MAKİNESİ TANIMLARI ---
-enum SistemDurumu {
+// --- DURUMLAR ---
+ enum SistemDurumu {
   SWING_UP,    // Yatayın altında enerji pompalama
   YAKALAMA,    // Yatayın üstünde süzülerek yavaşlama
   DENGELEME,   // Tepe noktasında tamamen sessiz duruş (Motor = 0)
   TAMPON_BOLGE // Mikro titreşim ve aktif sönümleme (Aktif Fren)
-};
-SistemDurumu sistem_durumu = SWING_UP;
+ };
+ SistemDurumu sistem_durumu = SWING_UP;
 
 // --- KASKAD KONTROL KAZANÇLARI ---
-double Kp_dis = -0.09;   // Dış döngü oransal kazanç (tune edin)
-double Kd_dis = -0.07;   // Dış döngü türev kazanç (tune edin)
+ double Kp_dis = -0.09;   // Dış döngü oransal kazanç (tune edin)
+ double Kd_dis = -0.07;   // Dış döngü türev kazanç (tune edin)
 
-double Kp_ic = 2.5;      // İç döngü oransal kazanç V/rad (tune edin)
-double Kd_ic = 0.2;      // İç döngü türev kazanç V/(rad/s) (tune edin)
+ double Kp_ic = 2.5;      // İç döngü oransal kazanç V/rad (tune edin)
+ double Kd_ic = 0.2;      // İç döngü türev kazanç V/(rad/s) (tune edin)
 
-double Ke = 95.0;
+ double Ke = 95.0;
 
 // --- DURUM DEĞİŞKENLERİ ---
-double sarkac_konum = 0.0;
-double motor_konum = 0.0;
-double sarkac_hiz = 0.0;
-double motor_hiz = 0.0;
-double anlik_sarkac = 0.0;
-const int min_pwm = 10;
+ double sarkac_konum = 0.0;
+ double motor_konum = 0.0;
+ double sarkac_hiz = 0.0;
+ double motor_hiz = 0.0;
+ double anlik_sarkac = 0.0;
+ const int min_pwm = 10;
 
-double sarkac_oncekikonum_rad = 0.0;
-double motor_oncekikonum_rad = 0.0;
+ double sarkac_oncekikonum_rad = 0.0;
+ double motor_oncekikonum_rad = 0.0;
 
-// --- SABİTLER VE HEDEFLER (2X ÇÖZÜNÜRLÜK İÇİN GÜNCELLENDİ) ---
-// Sarkaç 600 -> 1200 Pals, Motor 100 -> 200 Pals oldu
-const double SARKAC_PALS_TO_RAD = (2.0 * PI) / 1200.0;
-const double MOTOR_PALS_TO_RAD  = (2.0 * PI) / 200.0;
-const double hedef_pals = 600.0; // Eski 300 artık 600
+ const double SARKAC_PALS_TO_RAD = (2.0 * PI) / 1200.0;
+ const double MOTOR_PALS_TO_RAD  = (2.0 * PI) / 200.0;
+ const double hedef_pals = 600.0; // Eski 300 artık 600
 
-unsigned long onceki_zaman_mikro = 0;
-volatile long sarkac_pals_sayaci = 0;
-volatile long motor_pals_sayaci = 0;
+ unsigned long onceki_zaman_mikro = 0;
+ volatile long sarkac_pals_sayaci = 0;
+ volatile long motor_pals_sayaci = 0;
 
-// --- KESME FONKSİYONLARI (2X YÖNTEMİ) ---
-void sarkac_ISR() {
+// --- KESMELER ---
+ void sarkac_ISR() {
   if (digitalRead(sarkac_A) == digitalRead(sarkac_B)) sarkac_pals_sayaci++; 
   else sarkac_pals_sayaci--;
-}
+ }
 
-void motor_ISR() {
+ void motor_ISR() {
   if (digitalRead(motor_A) == digitalRead(motor_B)) motor_pals_sayaci++; 
   else motor_pals_sayaci--;
-}
+ }
 
-// --- YARDIMCI FONKSİYONLAR ---
-double hiz_hesapla(double mevcut, double &eski, double dt) {
+// --- FONKSİYONLAR ---
+ double hiz_hesapla(double mevcut, double &eski, double dt) {
   double hiz = (mevcut - eski) / dt;
   eski = mevcut;
   return hiz;
-}
+ }
 
-int sign(double deger) {
+ int sign(double deger) {
   return constrain(deger*10,-1,1);
-}
+ }
 
-void motorgucver(double V_uygulanacak, int pwm) {
+ void motorgucver(double V_uygulanacak, int pwm) {
   if (V_uygulanacak > 0) {
     analogWrite(RPWM, pwm);
     digitalWrite(LPWM, LOW);
@@ -97,10 +92,10 @@ void motorgucver(double V_uygulanacak, int pwm) {
     digitalWrite(RPWM, LOW);
     digitalWrite(LPWM, LOW);
   }
-}
+ }
 
-// --- KURULUM ---
-void setup() {
+// --- SETUP ---
+ void setup() {
   Serial.begin(115200); 
   
   pinMode(RPWM, OUTPUT);
@@ -115,10 +110,10 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(motor_A), motor_ISR, CHANGE);
 
   onceki_zaman_mikro = micros();
-}
+ }
 
-// --- ANA DÖNGÜ ---
-void loop() {
+// --- LOOP ---
+ void loop() {
   unsigned long suan_mikro = micros();
   double dt = (suan_mikro - onceki_zaman_mikro) / 1000000.0; 
 
@@ -169,9 +164,9 @@ void loop() {
     double tepe_uzakligi = fabs(sarkac_konum - hedef_pals);
 
     // --- DURUM MAKİNESİ (Sınırlar 2 katına çıkarıldı) ---
-    switch (sistem_durumu) {
+switch (sistem_durumu) {
 
-      case SWING_UP:
+ case SWING_UP:
         // GEÇİŞ: Sarkaç 90 dereceyi (300 pals) geçtiyse YAKALAMA moduna geç
         if (tepe_uzakligi <= 300.0) {
           sistem_durumu = YAKALAMA; // BURASI DÜZELTİLDİ: Sistem_durumu -> sistem_durumu
@@ -209,7 +204,7 @@ void loop() {
         }
         break;
 
-case YAKALAMA:
+ case YAKALAMA:
         // GEÇİŞ 1: Sarkaç Tampon Bölgeye (90 pals) girdiyse oraya geç
         if (tepe_uzakligi <= 90.0) { 
           sistem_durumu = TAMPON_BOLGE;
@@ -238,7 +233,7 @@ case YAKALAMA:
         }
         break;
 
-case DENGELEME:
+ case DENGELEME:
         // Sarkaç çok yakın : // Taş gibi dursun
         if (tepe_uzakligi > 14.0) {
           sistem_durumu = TAMPON_BOLGE; 
@@ -249,7 +244,7 @@ case DENGELEME:
         pwm_uygulanacak = 0;
         break;
 
-case TAMPON_BOLGE:
+ case TAMPON_BOLGE:
         // GEÇİŞ: Sarkaç tepe noktasından çok uzaklaştıysa YAKALAMA veya SWING_UP'a dön
         if (tepe_uzakligi > 90.0) { // Sınırı sisteminize göre ayarlayın
           sistem_durumu = YAKALAMA; 
@@ -296,12 +291,12 @@ case TAMPON_BOLGE:
         break;
     }
     
-    // --- 3. ÇIKIŞ VE İLETİŞİM ---
+    // printler
     motorgucver(V_uygulanacak, pwm_uygulanacak);
 
     double rad2deg = 180.0 / PI;
 
-    // İNSAN OKUMASI VE HATA AYIKLAMA İÇİN SERİ ÇIKTI
+   
     Serial.print("Mod:");
     if (sistem_durumu == DENGELEME) Serial.print("DENGE");
     else if (sistem_durumu == YAKALAMA) Serial.print("YAKAL");
@@ -319,4 +314,4 @@ case TAMPON_BOLGE:
     Serial.print("\t PWM:"); 
     Serial.println(pwm_uygulanacak); 
   }
-}
+ }
